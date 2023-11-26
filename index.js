@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const app = express();
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config()
 const port = process.env.PORT || 5000;
 
@@ -96,13 +96,6 @@ async function run() {
             res.send(shopResult)
         })
 
-
-        app.post("/shopProduct", async (req, res) => {
-            const bodyInfo = req.body;
-            const result = await productCollection.insertOne(bodyInfo)
-            res.send(result)
-        })
-
         app.patch('/updateLimit/:email', async (req, res) => {
             const updateLimit = req.body.limit;
             const email = req.params.email;
@@ -117,6 +110,52 @@ async function run() {
             const result = await shopCollection.updateOne(query, updateDoc)
             res.send(result)
         })
+
+
+        // product related api 
+
+        app.post("/shopProduct", async (req, res) => {
+            const bodyInfo = req.body;
+            const result = await productCollection.insertOne(bodyInfo)
+            res.send(result)
+        })
+
+        app.get("/shopProduct/:email", async(req,res)=>{
+            const email = req.params.email;
+            const query = {email: email};
+            const result = await productCollection.find(query).toArray();
+            res.send(result)
+        })
+
+        app.get("/singleProduct/:id", async(req,res)=>{
+            const id = req.params.id;
+            console.log("single id---------------------",id)
+            const query = {_id: new ObjectId(id)};
+            const result = await productCollection.findOne(query);
+            res.send(result)
+        })
+
+        app.patch('/updateProduct/:id',async(req,res)=>{
+            const id = req.params.id;
+            const updateProduct = req.body;
+            const query = {_id: new ObjectId(id)}
+            const updateDoc={
+                $set:{
+                    ...updateProduct
+                }
+            }
+            const result = await productCollection.updateOne(query,updateDoc);
+            res.send(result)
+        })
+
+        app.delete('/shopProduct/:id', async(req,res)=>{
+            const id = req.params.id;
+            const query = {_id: new ObjectId(id)}
+            const result = await productCollection.deleteOne(query);
+            res.send(result)
+        })
+
+       
 
 
 
