@@ -1,14 +1,21 @@
 const express = require('express');
 const cors = require('cors');
 const app = express();
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const jwt = require('jsonwebtoken');
 require('dotenv').config()
+const cookieParser = require('cookie-parser')
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_SK);
 const port = process.env.PORT || 5000;
 
 
 // middleware
-app.use(cors())
+app.use(cors({
+    origin: ["http://localhost:5173"],
+    credentials: true
+}))
 app.use(express.json())
+app.use(cookieParser())
 
 
 // console.log(process.env.DB_USER)
@@ -33,11 +40,101 @@ async function run() {
         // Send a ping to confirm a successful connection
         // await client.db("admin").command({ ping: 1 });
 
+        // middlewares
+        const verifyToken = (req, res, next) => {
+            const token = req.cookies?.token;
+            console.log(token);
+            if (!token) {
+                return res.status(401).send({ message: 'unauthorized access' })
+            }
+            jwt.verify(token, process.env.SECRET_ACCESS_TOKEN, (err, decoded) => {
+                if (err) {
+                    return res.status(401).send({ message: 'unauthorized access' })
+                }
+                else {
+                    req.user = decoded
+                    next()
+                }
+            })
+        }
+
+
+        // jwt related api
+        app.post('/jwt', async (req, res) => {
+            const user = req.body;
+            const token = jwt.sign(user, process.env.SECRET_ACCESS_TOKEN, { expiresIn: '1h' })
+            res
+                .cookie('token', token, {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === "production" ? true : false,
+                    sameSite: process.env.NODE_ENV === "production" ? "none" : "strict"
+                })
+                .send({ success: true })
+        })
+
+        app.post('/logout', async (req, res) => {
+            const user = req.user;
+            console.log(user)
+            res.clearCookie('token', {
+                maxAge: 0,
+                secure: process.env.NODE_ENV === "production" ? true : false,
+                sameSite: process.NODE_ENV === "production" ? "none" : "strict"
+            }).send({ success: true })
+        })
+
+
+
+
         const usersCollection = client.db('inventoryDb').collection('users')
         const shopCollection = client.db('inventoryDb').collection('shops')
         const productCollection = client.db('inventoryDb').collection('products')
+        const cartCollection = client.db('inventoryDb').collection('carts')
+        const salesCollection = client.db('inventoryDb').collection('sales')
+        const paymentCollection = client.db('inventoryDb').collection('payments')
 
         // users related api
+
+        // getting all users
+
+        app.get('/users',verifyToken, async (req, res) => {
+            const page = req.query.page;
+            const pageNumber = parseInt(page);
+            const perPage = 5;
+            const skip = pageNumber*perPage;
+
+            const result = await usersCollection.find().skip(skip).limit(perPage).toArray();
+            const count = await usersCollection.estimatedDocumentCount()
+            res.send({result,count})
+        })
+
+        // verifying admin
+        app.get('/users/admin/:email', async(req,res)=>{
+            const email = req.params.email;
+            // TODO: verify with token
+            const query ={email: email};
+            const user = await usersCollection.findOne(query);
+
+            let admin = false;
+            if(user){
+                admin = user?.role === 'admin'
+            }
+            res.send({admin});
+        })
+        app.get('/users/isManager/:email', async(req,res)=>{
+            const email = req.params.email;
+            // TODO: verify with token
+            const query ={email: email};
+            const user = await usersCollection.findOne(query);
+
+            let manager = false;
+            if(user){
+                admin = user?.role === 'manager'
+            }
+            res.send({manager});
+        })
+
+
+
         app.post('/users', async (req, res) => {
             const user = req.body;
             // console.log(user)
@@ -80,6 +177,11 @@ async function run() {
             res.send(result)
         })
 
+        app.get('/shops', async (req, res) => {
+            const result = await shopCollection.find().toArray()
+            res.send(result)
+        })
+
 
         app.post('/shops', async (req, res) => {
             const shopData = req.body;
@@ -102,7 +204,7 @@ async function run() {
             const query = { email: email }
             console.log(query)
             const updateDoc = {
-                $set:{
+                $set: {
                     limit: parseInt(updateLimit) - 1
                 }
             }
@@ -114,48 +216,180 @@ async function run() {
 
         // product related api 
 
+        // getting all products
+        app.get('/allProducts', async (req, res) => {
+            const result = await productCollection.find().toArray();
+            res.send(result)
+        })
+
         app.post("/shopProduct", async (req, res) => {
             const bodyInfo = req.body;
             const result = await productCollection.insertOne(bodyInfo)
             res.send(result)
         })
 
-        app.get("/shopProduct/:email", async(req,res)=>{
+        app.get("/shopProduct/:email", async (req, res) => {
             const email = req.params.email;
-            const query = {email: email};
+            const query = { email: email };
             const result = await productCollection.find(query).toArray();
             res.send(result)
         })
 
-        app.get("/singleProduct/:id", async(req,res)=>{
+        app.get("/singleProduct/:id", async (req, res) => {
             const id = req.params.id;
-            console.log("single id---------------------",id)
-            const query = {_id: new ObjectId(id)};
+            console.log(id)
+            console.log("single id---------------------", id)
+            const query = { _id: new ObjectId(id) };
+            console.log(query)
             const result = await productCollection.findOne(query);
             res.send(result)
         })
 
-        app.patch('/updateProduct/:id',async(req,res)=>{
+        app.patch('/updateProduct/:id', async (req, res) => {
             const id = req.params.id;
             const updateProduct = req.body;
-            const query = {_id: new ObjectId(id)}
-            const updateDoc={
-                $set:{
+            const query = { _id: new ObjectId(id) }
+            const updateDoc = {
+                $set: {
                     ...updateProduct
                 }
             }
-            const result = await productCollection.updateOne(query,updateDoc);
+            const result = await productCollection.updateOne(query, updateDoc);
             res.send(result)
         })
 
-        app.delete('/shopProduct/:id', async(req,res)=>{
+        app.patch('/product/:id', async (req, res) => {
             const id = req.params.id;
-            const query = {_id: new ObjectId(id)}
+            const updateProduct = req.body;
+            const query = { _id: new ObjectId(id) };
+            console.log("pppppppppppppppppppppppppppppppppppppppp", query)
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: {
+                    quantity: parseInt(updateProduct?.quantity),
+                    saleCount: parseInt(updateProduct?.saleCount)
+                }
+            }
+            const result = await productCollection.updateOne(query, updateDoc, options);
+            res.send(result)
+        })
+
+        app.delete('/shopProduct/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
             const result = await productCollection.deleteOne(query);
             res.send(result)
         })
 
-       
+        // cart related api 
+        app.post('/addToCart', async (req, res) => {
+            const cartData = req.body;
+            // console.log(cartData);
+            const result = await cartCollection.insertOne(cartData);
+            res.send(result)
+        })
+
+        app.get('/cartProducts/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+            const result = await cartCollection.find(query).toArray();
+            res.send(result)
+        })
+
+        // sales related api
+
+        // getting all the sales data
+
+        app.get('/allSales', async (req, res) => {
+            const result = await salesCollection.find().toArray();
+            res.send(result);
+        })
+
+        app.get('/manager/salesProduct', async (req, res) => {
+            const email = req.query.email;
+            console.log(email);
+            let query = {}
+            if (email) {
+                query = { email: email }
+            }
+            console.log(query);
+            const result = await salesCollection.find(query).toArray();
+            res.send(result)
+        })
+
+
+        app.post('/salesProduct', async (req, res) => {
+            const product = req.body;
+            const result = await salesCollection.insertOne(product);
+            res.send(result)
+        })
+
+        app.delete('/sold-product-delete/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            console.log("lllllllllllllllllllllll", query);
+            const result = await cartCollection.deleteOne(query);
+            res.send(result)
+        })
+
+        // payment intent
+
+        app.post("/create-payment-intent", async (req, res) => {
+            const { price } = req.body;
+            const amount = parseInt(price * 100)
+            console.log(amount, "Price amount in the backend");
+
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: "usd",
+                payment_method_types: ["card"],
+            });
+
+            res.send({
+                clientSecret: paymentIntent.client_secret,
+            });
+        })
+
+        // after doing payment
+
+        app.put("/payment",async(req,res)=>{
+            const item = req.body;
+            const result = await paymentCollection.insertOne(item);
+            res.send(result)
+        })
+
+        app.patch('/newProductLimit/:email',async(req,res)=>{
+            const email = req.params.email;
+            const newProductLimit = req.body;
+            const query = {email: email};
+            const options= {upsert: true};
+            const updateDoc={
+                $set:{
+                    limit: newProductLimit.newProductLimit
+                }
+            }
+            const result = await shopCollection.updateOne(query,updateDoc,options);
+            res.send(result)
+        })
+
+        app.patch("/system-admin-income", async(req,res)=>{
+            const price = parseInt(req.query.price);
+            const query = {role: "admin"};
+            const result = await usersCollection.findOne(query);
+            const income = result?.income + price ;
+            const options = {upsert: true};
+            const updateDoc = {
+                $set:{
+                    income: income
+                }
+            }
+            const adminIncome = await usersCollection.updateOne(query,updateDoc,options);
+            res.send(adminIncome)
+        })
+
+
+
+
 
 
 
