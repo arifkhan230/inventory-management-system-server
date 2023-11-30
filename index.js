@@ -52,10 +52,21 @@ async function run() {
                     return res.status(401).send({ message: 'unauthorized access' })
                 }
                 else {
-                    req.user = decoded
+                    req.decoded = decoded
                     next()
                 }
             })
+        }
+
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded.email;
+            const query = { email: email };
+            const user = await usersCollection.findOne(query);
+            const isAdmin = user?.role === 'admin'
+            if (!isAdmin) {
+                return res.status(403).send({ message: 'access forbidden' })
+            }
+            next()
         }
 
 
@@ -96,44 +107,67 @@ async function run() {
 
         // getting all users
 
-        app.get('/users',verifyToken, async (req, res) => {
+        app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
             const page = req.query.page;
             const pageNumber = parseInt(page);
             const perPage = 5;
-            const skip = pageNumber*perPage;
+            const skip = pageNumber * perPage;
 
             const result = await usersCollection.find().skip(skip).limit(perPage).toArray();
             const count = await usersCollection.estimatedDocumentCount()
-            res.send({result,count})
+            res.send({ result, count })
+        })
+
+        // getting admin data
+        app.get('/users/systemAdmin/:email',async(req,res)=>{
+            const email = req.params.email;
+            const query = {email:email};
+            const result = await usersCollection.findOne(query);
+            res.send(result)
         })
 
         // verifying admin
-        app.get('/users/admin/:email', async(req,res)=>{
+        app.get('/users/admin/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
-            // TODO: verify with token
-            const query ={email: email};
+            if (email !== req.decoded.email) {
+                return res.status(403).send({ message: 'forbidden access' })
+            }
+            const query = { email: email };
             const user = await usersCollection.findOne(query);
 
             let admin = false;
-            if(user){
+            if (user) {
                 admin = user?.role === 'admin'
             }
-            res.send({admin});
+            res.send({ admin });
         })
-        app.get('/users/isManager/:email', async(req,res)=>{
+
+
+
+
+        app.get('/users/isManager/:email', verifyToken, async (req, res) => {
             const email = req.params.email;
             // TODO: verify with token
-            const query ={email: email};
+            const query = { email: email };
             const user = await usersCollection.findOne(query);
 
             let manager = false;
-            if(user){
-                admin = user?.role === 'manager'
+            if (user) {
+                manager = user?.role === 'manager'
             }
-            res.send({manager});
+            res.send({ manager });
         })
 
 
+        // getting single user
+
+        app.get('/users/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+            console.log(query)
+            const result = await usersCollection.findOne(query);
+            res.send(result)
+        })
 
         app.post('/users', async (req, res) => {
             const user = req.body;
@@ -148,7 +182,7 @@ async function run() {
             res.send(result)
         })
 
-        app.patch('/users/manager/:email', async (req, res) => {
+        app.patch('/users/manager/:email', verifyToken, async (req, res) => {
             const managerInfo = req.body;
             const email = req.params.email;
             const query = { email: email }
@@ -169,15 +203,14 @@ async function run() {
 
         // shop related api
 
-        app.get('/shops/:email', async (req, res) => {
+        app.get('/shops/:email',verifyToken, async (req, res) => {
             const email = req.params.email;
             const query = { email: email }
             const result = await shopCollection.findOne(query);
-            console.log("-------------------------------------", result)
             res.send(result)
         })
 
-        app.get('/shops', async (req, res) => {
+        app.get('/shops', verifyToken, verifyAdmin, async (req, res) => {
             const result = await shopCollection.find().toArray()
             res.send(result)
         })
@@ -238,7 +271,6 @@ async function run() {
         app.get("/singleProduct/:id", async (req, res) => {
             const id = req.params.id;
             console.log(id)
-            console.log("single id---------------------", id)
             const query = { _id: new ObjectId(id) };
             console.log(query)
             const result = await productCollection.findOne(query);
@@ -262,7 +294,6 @@ async function run() {
             const id = req.params.id;
             const updateProduct = req.body;
             const query = { _id: new ObjectId(id) };
-            console.log("pppppppppppppppppppppppppppppppppppppppp", query)
             const options = { upsert: true };
             const updateDoc = {
                 $set: {
@@ -271,6 +302,20 @@ async function run() {
                 }
             }
             const result = await productCollection.updateOne(query, updateDoc, options);
+            res.send(result)
+        })
+
+        app.patch('/shop-update-quantity/:id',async(req,res)=>{
+            const id = req.params.id;
+            const newLimit = req.body;
+            const query = {_id: new ObjectId(id)}
+            const options= {upsert: true};
+            const updateDoc = {
+                $set:{
+                    limit: parseInt(newLimit.limit)
+                }
+            }
+            const result = await shopCollection.updateOne(query,updateDoc,options);
             res.send(result)
         })
 
@@ -300,23 +345,29 @@ async function run() {
 
         // getting all the sales data
 
-        app.get('/allSales', async (req, res) => {
+        app.get('/allSales',verifyToken,verifyAdmin, async (req, res) => {
             const result = await salesCollection.find().toArray();
             res.send(result);
         })
 
         app.get('/manager/salesProduct', async (req, res) => {
             const email = req.query.email;
-            console.log(email);
+            const page = parseInt(req.query.page);
+            const limit = 5 ;
+            const skip = page  * 5
+            console.log(page);
             let query = {}
             if (email) {
                 query = { email: email }
             }
             console.log(query);
-            const result = await salesCollection.find(query).toArray();
-            res.send(result)
-        })
+            const totalSales = await salesCollection.countDocuments(query);
+            const result = await salesCollection.find(query).sort({soldDate: -1}).skip(skip).limit(limit).toArray();
+            
+            res.send({result,totalSales})
 
+            
+        })
 
         app.post('/salesProduct', async (req, res) => {
             const product = req.body;
@@ -327,7 +378,6 @@ async function run() {
         app.delete('/sold-product-delete/:id', async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
-            console.log("lllllllllllllllllllllll", query);
             const result = await cartCollection.deleteOne(query);
             res.send(result)
         })
@@ -352,45 +402,40 @@ async function run() {
 
         // after doing payment
 
-        app.put("/payment",async(req,res)=>{
+        app.put("/payment", async (req, res) => {
             const item = req.body;
             const result = await paymentCollection.insertOne(item);
             res.send(result)
         })
 
-        app.patch('/newProductLimit/:email',async(req,res)=>{
+        app.patch('/newProductLimit/:email', async (req, res) => {
             const email = req.params.email;
             const newProductLimit = req.body;
-            const query = {email: email};
-            const options= {upsert: true};
-            const updateDoc={
-                $set:{
+            const query = { email: email };
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: {
                     limit: newProductLimit.newProductLimit
                 }
             }
-            const result = await shopCollection.updateOne(query,updateDoc,options);
+            const result = await shopCollection.updateOne(query, updateDoc, options);
             res.send(result)
         })
 
-        app.patch("/system-admin-income", async(req,res)=>{
+        app.patch("/system-admin-income", async (req, res) => {
             const price = parseInt(req.query.price);
-            const query = {role: "admin"};
+            const query = { role: "admin" };
             const result = await usersCollection.findOne(query);
-            const income = result?.income + price ;
-            const options = {upsert: true};
+            const income = result?.income + price;
+            const options = { upsert: true };
             const updateDoc = {
-                $set:{
+                $set: {
                     income: income
                 }
             }
-            const adminIncome = await usersCollection.updateOne(query,updateDoc,options);
+            const adminIncome = await usersCollection.updateOne(query, updateDoc, options);
             res.send(adminIncome)
         })
-
-
-
-
-
 
 
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
